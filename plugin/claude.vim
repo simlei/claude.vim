@@ -1,4 +1,56 @@
 " File: plugin/claude.vim
+" ============================================================================
+" Message History
+" ============================================================================
+
+if !exists('g:claude_message_history')
+  let g:claude_message_history = []
+endif
+
+if !exists('g:claude_message_history_pos')
+  let g:claude_message_history_pos = -1
+endif
+
+function! s:AddToMessageHistory(message)
+  if empty(a:message)
+    return
+  endif
+  
+  call add(g:claude_message_history, a:message) 
+  let g:claude_message_history_pos = len(g:claude_message_history) - 1
+endfunction
+
+function! s:RecallMessage(direction)
+  if bufname('%') != 'Claude Chat'
+    return ''
+  endif
+
+  let l:history_len = len(g:claude_message_history)
+  if l:history_len == 0
+    return ''
+  endif
+
+  let l:new_pos = g:claude_message_history_pos + a:direction
+  
+  if l:new_pos < 0 
+    echom "Reached start of message history"
+    return ''
+  elseif l:new_pos >= l:history_len
+    echom "Reached end of message history"
+    return ''
+  endif
+
+  let g:claude_message_history_pos = l:new_pos
+  let l:message = g:claude_message_history[g:claude_message_history_pos]
+  
+  call append('.', 'You: ' . l:message)
+  normal! j$
+endfunction
+
+nnoremap <F9><Up> :call <SID>RecallMessage(-1)<CR>
+inoremap <F9><Up> <C-o>:call <SID>RecallMessage(-1)<CR>
+nnoremap <F9><Down> :call <SID>RecallMessage(1)<CR>
+inoremap <F9><Down> <C-o>:call <SID>RecallMessage(1)<CR>
 " vim: sw=2 ts=2 et
 
 command! -nargs=1 SilentEchoMessage call s:SilentEchoMessage(eval(<q-args>))
@@ -851,6 +903,8 @@ function! s:OpenClaudeChat()
     setlocal foldexpr=GetChatFold(v:lnum)
     setlocal foldlevel=1
 
+    setlocal filetype=markdown
+
     call s:SetupClaudeChatSyntax()
 
     call setline(1, ['System prompt: ' . g:claude_default_system_prompt[0]])
@@ -1019,6 +1073,8 @@ function! s:SendChatMessage(prefix)
   SilentEchoMessage "================= SendChatMessage:1: start with prefix=" . a:prefix . "; truncated_msg=" . strpart(getline('.'), 0, 300)
 
   let [l:messages, l:system_prompt] = s:ParseChatBuffer()
+  let current_message_content = l:messages[-1].content
+  call s:AddToMessageHistory(current_message_content)
 
   let l:tool_uses = s:ResponseExtractToolUses(l:messages)
   if !empty(l:tool_uses)

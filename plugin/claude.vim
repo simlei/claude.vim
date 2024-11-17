@@ -113,9 +113,10 @@ function! s:ClaudeQueryInternal(messages, system_prompt, tools, stream_callback,
       call extend(l:cmd, ['--tools', json_encode(a:tools)])
     endif
   else
-    let l:script_dir = expand('<sfile>:p:h')
-    let l:headers_file = l:script_dir . '/.claude_headers.txt'
-    echom "DDD: exporting headers to " . l:headers_file
+    let l:temp_base = tempname()
+    let l:headers_file = fnamemodify(l:temp_base, ':r') . '.log'
+    echom "LOG: exporting response headers to " . l:headers_file
+    redraw
     let l:url = g:claude_api_url
     let l:data = {
       \ 'model': g:claude_model,
@@ -997,6 +998,8 @@ endfunction
 
 function! s:SendChatMessage(prefix)
   echom "DDD: ================= SendChatMessage:1: start with prefix=" . a:prefix . "; truncated_msg=" . strpart(getline('.'), 0, 300)
+  redraw
+
   let [l:messages, l:system_prompt] = s:ParseChatBuffer()
 
   let l:tool_uses = s:ResponseExtractToolUses(l:messages)

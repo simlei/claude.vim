@@ -376,13 +376,19 @@ endfunction
 " ============================================================================
 
 function! s:ApplyChange(normal_command, content)
+  SilentEchoDebug "ApplyChange:0: start normal_command=" . a:normal_command . " content=" . a:content
   let l:view = winsaveview()
+  SilentEchoDebug "ApplyChange:0.1"
   let l:paste_option = &paste
+  SilentEchoDebug "ApplyChange:0.2"
 
   set paste
 
+  SilentEchoDebug "ApplyChange:1:"
   let l:normal_command = substitute(a:normal_command, '<CR>', "\<CR>", 'g')
-  execute 'normal ' . l:normal_command . "\<C-r>=a:content\<CR>"
+  let l:execute_payload = 'normal ' . l:normal_command . "\<C-r>=a:content\<CR>"
+  SilentEchoDebug "ApplyChange:2: executing; execute_payload=" . l:execute_payload
+  execute l:execute_payload
 
   let &paste = l:paste_option
   call winrestview(l:view)
@@ -450,44 +456,46 @@ function! s:ApplyCodeChangesDiff(bufnr, changes) abort
     SilentEchoDebug "ApplyCodeChangesDiff:5: applying changes count=" . len(a:changes) . " failed_count=" . len(l:failed_edits)
     for change in a:changes
       try
-        SilentEchoDebug "ApplyCodeChangesDiff:1: processing change type=" . change.type . " target_winid=" . l:target_winid . " failed_count=" . len(l:failed_edits)
+        SilentEchoDebug "ApplyCodeChangesDiff:6: processing change type=" . change.type . " target_winid=" . l:target_winid . " failed_count=" . len(l:failed_edits)
         if change.type == 'content'
+          SilentEchoDebug "ApplyCodeChangesDiff:6-content: applying content change normal_command=" . (change.normal_command)
           call s:ApplyChange(change.normal_command, change.content)
+          SilentEchoDebug "ApplyCodeChangesDiff:6-content: applied content change"
         elseif change.type == 'vimexec'
-          SilentEchoDebug "ApplyCodeChangesDiff:2: executing vimexec commands count=" . len(change.commands)
           for cmd in change.commands
+            SilentEchoDebug "ApplyCodeChangesDiff:6-vimexec: executing command=" . cmd
             execute 'normal ' . cmd
           endfor
         endif
-        SilentEchoDebug "ApplyCodeChangesDiff:3: change applied successfully type=" . change.type
+        SilentEchoDebug "ApplyCodeChangesDiff:8: change applied successfully type=" . change.type
       catch
         call add(l:failed_edits, change)
         let l:error_msg = "Failed to apply edit in buffer " . bufname(a:bufnr) . ": " . v:exception
-        SilentEchoDebug "ApplyCodeChangesDiff:4: error occurred msg=" . l:error_msg . " failed_count=" . len(l:failed_edits)
+        SilentEchoDebug "ApplyCodeChangesDiff:9: error occurred msg=" . l:error_msg . " failed_count=" . len(l:failed_edits)
         echohl WarningMsg
         echomsg l:error_msg
         echohl None
       endtry
     endfor
 
-    SilentEchoDebug "ApplyCodeChangesDiff:5: applying diff mode target_winid=" . l:target_winid . " failed_total=" . len(l:failed_edits)
+    SilentEchoDebug "ApplyCodeChangesDiff:10: applying diff mode target_winid=" . l:target_winid . " failed_total=" . len(l:failed_edits)
     diffthis
     call win_gotoid(l:target_winid)
     diffthis
 
     if !empty(l:failed_edits)
       let l:error_msg = "Some edits could not be applied. Check the messages for details."
-      SilentEchoDebug "ApplyCodeChangesDiff:7: failed edits summary msg=" . l:error_msg . " count=" . len(l:failed_edits)
+      SilentEchoDebug "ApplyCodeChangesDiff:11: failed edits summary msg=" . l:error_msg . " count=" . len(l:failed_edits)
       echohl WarningMsg
       echomsg l:error_msg
       echohl None
     endif
     
     let l:success = 1
-    SilentEchoDebug "ApplyCodeChangesDiff:8: completed success=" . l:success . " target_winid=" . l:target_winid . " failed_count=" . len(l:failed_edits)
+    SilentEchoDebug "ApplyCodeChangesDiff:12: completed success=" . l:success . " target_winid=" . l:target_winid . " failed_count=" . len(l:failed_edits)
 
   finally
-    SilentEchoDebug "ApplyCodeChangesDiff:9: cleanup orig_win=" . l:original_winid . " success=" . l:success . " error=" . l:error_msg
+    SilentEchoDebug "ApplyCodeChangesDiff:13: cleanup orig_win=" . l:original_winid . " success=" . l:success . " error=" . l:error_msg
     call win_gotoid(l:original_winid)
     
     if !l:success
@@ -1229,19 +1237,16 @@ function! s:ProcessCodeBlock(block, all_changes)
   SilentEchoDebug '10 - Process complete, marked as APPLIED'
 endfunction
 " At top of file
-let s:debug_counter = 0
 
 function! s:ResponseExtractChanges()
-  let s:debug_counter += 1
-  SilentEchoDebug "ResponseExtractChanges:" . s:debug_counter . ": Starting change extraction"
+  SilentEchoDebug "ResponseExtractChanges:" . "1"  . ": Starting change extraction"
   
   let l:all_changes = {}
 
   " Find the start of the last Claude block
   normal! G
   let l:start_line = search('^Claude:', 'b')  " Skip over Claude...:
-  let s:debug_counter += 1
-  SilentEchoDebug "ResponseExtractChanges:" . s:debug_counter . ": Found Claude block at line " . l:start_line
+  SilentEchoDebug "ResponseExtractChanges:" . "2" . ": Found Claude block at line " . l:start_line
   
   let l:end_line = line('$')
   let l:markdown_delim = '^' . s:GetClaudeIndent() . '```'
@@ -1256,14 +1261,12 @@ function! s:ResponseExtractChanges()
       if ! l:in_code_block
         " Start of code block
         let l:current_block = {'header': substitute(l:line, l:markdown_delim, '', ''), 'code': [], 'start_line': l:line_num + 1}
-        let s:debug_counter += 1
-        SilentEchoDebug "ResponseExtractChanges:" . s:debug_counter . ": Starting code block at line " . l:line_num
+        SilentEchoDebug "ResponseExtractChanges:" . "3" . ": Starting code block at line " . l:line_num
         let l:in_code_block = 1
       else
         " End of code block
         let l:current_block.end_line = l:line_num
-        let s:debug_counter += 1
-        SilentEchoDebug "ResponseExtractChanges:" . s:debug_counter . ": Ending code block at line " . l:line_num
+        SilentEchoDebug "ResponseExtractChanges:" . "4" . ": Ending code block at line " . l:line_num
         call s:ProcessCodeBlock(l:current_block, l:all_changes)
         let l:in_code_block = 0
       endif
@@ -1275,13 +1278,11 @@ function! s:ResponseExtractChanges()
   " Process any remaining open code block
   if l:in_code_block
     let l:current_block.end_line = l:end_line
-    let s:debug_counter += 1
-    SilentEchoDebug "ResponseExtractChanges:" . s:debug_counter . ": Processing final block ending at " . l:end_line
+    SilentEchoDebug "ResponseExtractChanges:" . "5" . ": Processing final block ending at " . l:end_line
     call s:ProcessCodeBlock(l:current_block, l:all_changes)
   endif
 
-  let s:debug_counter += 1
-  SilentEchoDebug "ResponseExtractChanges:" . s:debug_counter . ": Completed with " . len(l:all_changes) . " changes"
+  SilentEchoDebug "ResponseExtractChanges:" . "6" . ": Completed with " . len(l:all_changes) . " changes"
   return l:all_changes
 endfunction
 

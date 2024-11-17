@@ -53,6 +53,10 @@ In special circumstances, you can't make a suggestion by rewriting a code functi
 - For example, you use `/^function! s:Example(/<CR>O` to prepend your new code ABOVE the specific function.
 - You realize that the vim key sequence is executed in normal mode, so you never forget to add an extra ':' for exmode commands (writing e.g. file::/../,/../c etc. for ranged changes).
 
+Please remember, for special-circumstance vim normal-mode commands, a range of lines should not precede the colon.
+ - bad example: 1,100:v/^\s*"/d_
+ - good example: :1,100v/^\s*"/d_
+
 ## Vimexec Command Blocks
 
 In cases 1:1 code replacement would be grossly inefficient (particularly complex refactorings),

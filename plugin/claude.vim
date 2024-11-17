@@ -9,11 +9,17 @@ endfunction
 
 command! SilentEchoDebug -nargs=1 call s:SilentEchoDebug(<q-args>)
 function! s:SilentEchoDebug(message)
-  echomsg "DBG: " . a:message
-  redraw
+  if g:claude_debug_enabled
+    echomsg "DBG: " . a:message
+    redraw
+  endif
 endfunction
 
 " Configuration variables
+if !exists('g:claude_debug_enabled')
+  let g:claude_debug_enabled = 1
+endif
+
 if !exists('g:claude_api_key')
   let g:claude_api_key = ''
 endif

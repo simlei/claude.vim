@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+#
+# Translating AWS Bedrock API to the Claude API to enable (Streaming) Claude API
+# code to work seamlessly on AWS Bedrock.
+#
+# (c) Petr Baudis <pasky@ucw.cz>, MIT licence.
+
+import argparse
+import json
+import sys
+import boto3
+from botocore.exceptions import ClientError
+import datetime
+
+def log_debug(message):
+    with open('/tmp/claude_bedrock_helper.log', 'a') as f:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        f.write(f"{timestamp}: {message}\n")
+
+def emit_event(event_type, data):
+    print(f"event: {event_type}")
+    print(f"data: {json.dumps(data)}")
+    sys.stdout.flush()
+
+def invoke_bedrock_model(client, model_id, messages, system_prompt, tools=None):
+    log_debug(f"Invoking Bedrock model {model_id} with messages: {messages}")
+    try:
+        request = {
+            "modelId": model_id,
+            "messages": messages,
+            "system": [{"text": sanitize_text(system_prompt)}] if system_prompt else None,
+            "inferenceConfig": {
+                "temperature": 0.7,
+                "maxTokens": 2048,
+            }
+        }
+
+        if tools:
+            request["toolConfig"] = convert_to_bedrock_tool_format(tools)
+
+        response = client.converse_stream(**request)
+        headers = {}
+        # Extract relevant headers from response metadata
+        if 'ResponseMetadata' in response:
+            for key, value in response['ResponseMetadata'].get('HTTPHeaders', {}).items():
+                if 'ratelimit' in key.lower():
+                    headers[key] = value
+        log_debug(f"Response headers: {headers}")
+        return response['stream'], headers
+    except ClientError as e:
+        print(f"Error invoking Bedrock model: {e}", file=sys.stderr)
+        sys.exit(1)
+
+def stream_response(stream, headers):
+    if headers:
+        emit_event("content_block_start", {
+            "type": "content_block_start",
+            "content_block_index": 0,
+            "content_block": {
+                "type": "headers",
+                "headers": headers
+            }
+        })
+        emit_event("content_block_stop", {
+            "type": "content_block_stop",
+            "content_block_index": 0
+        })
+
+    for event in stream:
+        if 'contentBlockStart' in event:
+            in_data = event['contentBlockStart']
+            tool_call = convert_from_bedrock_tool_format(in_data['start']['toolUse'])
+            emit_event("content_block_start", {
+                "type": "content_block_start",
+                "content_block_index": in_data['contentBlockIndex'],
+                "content_block": tool_call
+            })
+
+        elif 'contentBlockDelta' in event:
+            in_data = event['contentBlockDelta']
+            content_delta_data = {
+                "type": "content_block_delta",
+                "index": in_data['contentBlockIndex']
+            }
+            if 'toolUse' in in_data['delta']:
+                content_delta_data["delta"] = {
+                    "type": "input_json_delta",
+                    "partial_json": in_data['delta']['toolUse']['input']
+                }
+            else:
+                content_delta_data["delta"] = {
+                    "type": "text_delta",
+                    "text": in_data['delta']['text']
+                }
+            emit_event("content_block_delta", content_delta_data)
+
+        elif 'contentBlockStop' in event:
+            emit_event("content_block_stop", {
+                "type": "content_block_stop",
+                "content_block_index": event["contentBlockStop"]["contentBlockIndex"]
+            })
+
+        elif 'messageStop' in event:
+            emit_event("message_stop", {"type": "message_stop"})
+
+        elif 'metadata' in event:
+            usage = event['metadata'].get('usage', {})
+            emit_event("message_delta", {
+                "type": "message_delta",
+                "usage": {
+                    "input_tokens": usage.get('inputTokens', 0),
+                    "output_tokens": usage.get('outputTokens', 0),
+                    "total_tokens": usage.get('totalTokens', 0)
+                }
+            })
+
+def main():
+    args = parse_arguments()
+
+    client = create_bedrock_client(args.region, args.profile)
+    messages = json.loads(args.messages)
+    tools = json.loads(args.tools) if args.tools else None
+    bedrock_messages = convert_to_bedrock_format(messages)
+
+    response_stream, headers = invoke_bedrock_model(client, args.model_id, bedrock_messages, args.system_prompt, tools)
+    stream_response(response_stream, headers)
+
+if __name__ == "__main__":
+    main()

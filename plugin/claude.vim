@@ -113,6 +113,9 @@ function! s:ClaudeQueryInternal(messages, system_prompt, tools, stream_callback,
       call extend(l:cmd, ['--tools', json_encode(a:tools)])
     endif
   else
+    let l:script_dir = expand('<sfile>:p:h')
+    let l:headers_file = l:script_dir . '/.claude_headers.txt'
+    echom "DDD: exporting headers to " . l:headers_file
     let l:url = g:claude_api_url
     let l:data = {
       \ 'model': g:claude_model,
@@ -132,19 +135,21 @@ function! s:ClaudeQueryInternal(messages, system_prompt, tools, stream_callback,
 
     " Convert data to JSON
     let l:json_data = json_encode(l:data)
-    let l:cmd = ['curl', '-s', '-N', '-X', 'POST']
+    let l:cmd = ['curl', '-s', '-N', '-X', 'POST', '-D', l:headers_file]
     call extend(l:cmd, l:headers)
     call extend(l:cmd, ['-d', l:json_data, l:url])
   endif
 
   " Start the job
   if has('nvim')
+    " echom 'DDD: Starting job: ' . join(l:cmd, ' ')
     let l:job = jobstart(l:cmd, {
       \ 'on_stdout': function('s:HandleStreamOutputNvim', [a:stream_callback, a:final_callback]),
       \ 'on_stderr': function('s:HandleJobErrorNvim', [a:stream_callback, a:final_callback]),
       \ 'on_exit': function('s:HandleJobExitNvim', [a:stream_callback, a:final_callback])
       \ })
   else
+    " echom 'DDD: Starting job: ' . join(l:cmd, ' ')
     let l:job = job_start(l:cmd, {
       \ 'out_cb': function('s:HandleStreamOutput', [a:stream_callback, a:final_callback]),
       \ 'err_cb': function('s:HandleJobError', [a:stream_callback, a:final_callback]),
@@ -210,7 +215,13 @@ function! s:HandleStreamOutput(stream_callback, final_callback, channel, msg)
       elseif l:response.type == 'message_delta' && has_key(l:response, 'usage')
         call s:DisplayTokenUsageAndCost(l:json_str)
       elseif l:response.type != 'message_stop' && l:response.type != 'message_start' && l:response.type != 'content_block_start' && l:response.type != 'ping'
+        if l:line =~# 'exceeded'
+          let l:msg = substitute(a:msg, '\n', ' ', 'g')
+          echom 'Error(exceeded): ' . l:msg
+        endif
         call a:stream_callback('Unknown Claude protocol output: "' . l:line . "\"\n")
+        " check for "exceeded" in the first line. if found, print as much of
+        " the incoming message as possible using "echom".
       endif
     elseif l:line ==# 'event: ping'
       " Ignore ping events
@@ -220,6 +231,10 @@ function! s:HandleStreamOutput(stream_callback, final_callback, channel, msg)
     elseif l:line ==# 'event: message_stop'
       call a:final_callback()
     elseif l:line !=# 'event: message_start' && l:line !=# 'event: message_delta' && l:line !=# 'event: content_block_start' && l:line !=# 'event: content_block_delta' && l:line !=# 'event: content_block_stop'
+      if l:line =~# 'exceeded'
+        let l:msg = substitute(a:msg, '\n', ' ', 'g')
+        echom 'Error(exceeded): ' . l:msg
+      endif
       call a:stream_callback('Unknown Claude protocol output: "' . l:line . "\"\n")
     endif
   endfor
@@ -274,61 +289,109 @@ function! s:ApplyChange(normal_command, content)
   call winrestview(l:view)
 endfunction
 
-function! s:ApplyCodeChangesDiff(bufnr, changes)
-  let l:original_winid = win_getid()
-  let l:failed_edits = []
+function! s:CleanUpHiddenCodeChangeBuffers(target_bufnr) abort
 
-  " Find or create a window for the target buffer
-  let l:target_winid = bufwinid(a:bufnr)
-  if l:target_winid == -1
-    " If the buffer isn't in any window, split and switch to it
-    execute 'split'
-    execute 'buffer ' . a:bufnr
-    let l:target_winid = win_getid()
-  else
-    " Switch to the window containing the target buffer
-    call win_gotoid(l:target_winid)
-  endif
+  " Get target buffer's file path
+  let l:target_path = expand('#' . a:target_bufnr . ':p')
 
-  " Create a new window for the diff view
-  rightbelow vnew
-  setlocal buftype=nofile
-  let &filetype = getbufvar(a:bufnr, '&filetype')
+  " Get list of all buffers
+  let l:buffer_list = getbufinfo()
 
-  " Copy content from the target buffer
-  call setline(1, getbufline(a:bufnr, 1, '$'))
-
-  " Apply all changes
-  for change in a:changes
-    try
-      if change.type == 'content'
-        call s:ApplyChange(change.normal_command, change.content)
-      elseif change.type == 'vimexec'
-        for cmd in change.commands
-          execute 'normal ' . cmd
-        endfor
-      endif
-    catch
-      call add(l:failed_edits, change)
-      echohl WarningMsg
-      echomsg "Failed to apply edit in buffer " . bufname(a:bufnr) . ": " . v:exception
-      echohl None
-    endtry
+  " Iterate through all buffers
+  for buf in l:buffer_list
+    " Check if buffer is hidden, not a real file, is our diff buffer, and matches target path
+    if buf.hidden 
+          \ && empty(buf.name)
+          \ && getbufvar(buf.bufnr, 'code_change_diff', 0)
+          \ && getbufvar(buf.bufnr, 'code_change_orig_path', '') ==# l:target_path
+      " Delete the buffer
+      echom "DDD:CleanUpHiddenCodeChangeBuffers:1: deleting hidden buffer bufnr=" . buf.bufnr
+      execute 'bwipeout! ' . buf.bufnr
+    endif
   endfor
+endfunction
 
-  " Set up diff for both windows
-  diffthis
-  call win_gotoid(l:target_winid)
-  diffthis
+function! s:ApplyCodeChangesDiff(bufnr, changes) abort
+  let l:original_winid = win_getid()
+  let l:target_winid = -1
+  let l:failed_edits = []
+  let l:error_msg = ''
+  let l:success = 0
 
-  " Return to the original window
-  call win_gotoid(l:original_winid)
+  try
+    echom "DDD:ApplyCodeChangesDiff:1: start with bufnr=" . a:bufnr . " changes=" . len(a:changes) . " orig_win=" . l:original_winid
+    
+    call s:CleanUpHiddenCodeChangeBuffers(a:bufnr)
+    
+    let l:target_winid = bufwinid(a:bufnr)
+    if l:target_winid == -1
+      echom "DDD:ApplyCodeChangesDiff:2: creating new split, no window found for bufnr=" . a:bufnr
+      execute 'split'
+      execute 'buffer ' . a:bufnr
+      let l:target_winid = win_getid()
+    else
+      echom "DDD:ApplyCodeChangesDiff:3: found existing window target_winid=" . l:target_winid
+      call win_gotoid(l:target_winid)
+    endif
 
-  if !empty(l:failed_edits)
-    echohl WarningMsg
-    echomsg "Some edits could not be applied. Check the messages for details."
-    echohl None
-  endif
+    rightbelow vnew
+    setlocal buftype=nofile
+    
+    let b:code_change_diff = 1
+    let b:code_change_orig_path = expand('#' . a:bufnr . ':p')
+    
+    let &filetype = getbufvar(a:bufnr, '&filetype')
+    echom "DDD:ApplyCodeChangesDiff:4: new diff buffer created, filetype=" . &filetype . " orig_path=" . b:code_change_orig_path
+
+    call setline(1, getbufline(a:bufnr, 1, '$'))
+
+    echom "DDD:ApplyCodeChangesDiff:5: applying changes count=" . len(a:changes) . " failed_count=" . len(l:failed_edits)
+    for change in a:changes
+      try
+        echom "DDD:ApplyCodeChangesDiff:1: processing change type=" . change.type . " target_winid=" . l:target_winid . " failed_count=" . len(l:failed_edits)
+        if change.type == 'content'
+          call s:ApplyChange(change.normal_command, change.content)
+        elseif change.type == 'vimexec'
+          echom "DDD:ApplyCodeChangesDiff:2: executing vimexec commands count=" . len(change.commands)
+          for cmd in change.commands
+            execute 'normal ' . cmd
+          endfor
+        endif
+        echom "DDD:ApplyCodeChangesDiff:3: change applied successfully type=" . change.type
+      catch
+        call add(l:failed_edits, change)
+        let l:error_msg = "Failed to apply edit in buffer " . bufname(a:bufnr) . ": " . v:exception
+        echom "DDD:ApplyCodeChangesDiff:4: error occurred msg=" . l:error_msg . " failed_count=" . len(l:failed_edits)
+        echohl WarningMsg
+        echomsg l:error_msg
+        echohl None
+      endtry
+    endfor
+
+    echom "DDD:ApplyCodeChangesDiff:5: applying diff mode target_winid=" . l:target_winid . " failed_total=" . len(l:failed_edits)
+    diffthis
+    call win_gotoid(l:target_winid)
+    diffthis
+
+    if !empty(l:failed_edits)
+      let l:error_msg = "Some edits could not be applied. Check the messages for details."
+      echom "DDD:ApplyCodeChangesDiff:7: failed edits summary msg=" . l:error_msg . " count=" . len(l:failed_edits)
+      echohl WarningMsg
+      echomsg l:error_msg
+      echohl None
+    endif
+    
+    let l:success = 1
+    echom "DDD:ApplyCodeChangesDiff:8: completed success=" . l:success . " target_winid=" . l:target_winid . " failed_count=" . len(l:failed_edits)
+
+  finally
+    echom "DDD:ApplyCodeChangesDiff:9: cleanup orig_win=" . l:original_winid . " success=" . l:success . " error=" . l:error_msg
+    call win_gotoid(l:original_winid)
+    
+    if !l:success
+      throw !empty(l:error_msg) ? l:error_msg : "Failed to apply code changes diff"
+    endif
+  endtry
 endfunction
 
 
@@ -496,6 +559,20 @@ function! s:ExecuteNewTool(path)
   if filereadable(a:path)
     return 'ERROR: File already exists: ' . a:path
   endif
+  if bufexists(a:path)
+    " write that buffer to the file and return an error so that the AI knows
+    " that there is actually a file to be interacted with; TODO: should find a
+    " way to not invoke the new tool in the first place if that's the case.
+    let l:current_winid = win_getid()
+    let bufnr = bufnr(a:path)
+    if bufnr == -1
+      topleft 1new
+      exec printf(':b%s', string(bufnr))
+      exec 'silent write ' . fnameescape(a:path)
+      exec :q
+    endif
+    return 'ERROR: Buffer already exists: ' . a:path . '; I have written the buffer to the file now.'
+  endif
 
   let l:current_winid = win_getid()
 
@@ -638,14 +715,19 @@ endfunction
 " ----- Chat service functions
 
 function! s:GetOrCreateChatWindow()
+  let l:current_winid = win_getid()
   let l:chat_bufnr = bufnr('Claude Chat')
-  if l:chat_bufnr == -1 || !bufloaded(l:chat_bufnr)
+  if l:chat_bufnr != -1 && bufloaded(l:chat_bufnr) && bufwinnr(l:chat_bufnr) == -1
+    " Open the buffer in a new window
+    exec printf('topleft sbuffer %d', l:chat_bufnr)
+    wincmd t
+    let l:chat_bufnr = bufnr()
+  elseif l:chat_bufnr == -1 || !bufloaded(l:chat_bufnr)
     call s:OpenClaudeChat()
     let l:chat_bufnr = bufnr('Claude Chat')
   endif
 
   let l:chat_winid = bufwinid(l:chat_bufnr)
-  let l:current_winid = win_getid()
 
   return [l:chat_bufnr, l:chat_winid, l:current_winid]
 endfunction
@@ -733,7 +815,12 @@ endfunction
 function! s:OpenClaudeChat()
   let l:claude_bufnr = bufnr('Claude Chat')
 
-  if l:claude_bufnr == -1 || !bufloaded(l:claude_bufnr)
+  " if the buffer exists and is loaded, but it is not in a window, open it in
+  " a new window (at the top of the screen)
+  if l:claude_bufnr != -1 && bufloaded(l:claude_bufnr) && bufwinnr(l:claude_bufnr) == -1
+    " Open the buffer in a new window
+    exec printf('topleft sbuffer %d', l:claude_bufnr)
+  elseif l:claude_bufnr == -1 || !bufloaded(l:claude_bufnr)
     execute 'botright new Claude Chat'
     setlocal buftype=nofile
     setlocal bufhidden=hide
@@ -909,6 +996,7 @@ function! s:GetBuffersContent()
 endfunction
 
 function! s:SendChatMessage(prefix)
+  echom "DDD: ================= SendChatMessage:1: start with prefix=" . a:prefix . "; truncated_msg=" . strpart(getline('.'), 0, 300)
   let [l:messages, l:system_prompt] = s:ParseChatBuffer()
 
   let l:tool_uses = s:ResponseExtractToolUses(l:messages)
@@ -981,38 +1069,47 @@ endfunction
 " ----- Handling responses: Code changes
 
 function! s:ProcessCodeBlock(block, all_changes)
+  echom 'DDD: 1 - Starting ProcessCodeBlock'
   let l:matches = matchlist(a:block.header, '^\(\S\+\)\s\+\([^:]\+\)\%(:\(.*\)\)\?$')
   let l:filetype = get(l:matches, 1, '')
   let l:buffername = get(l:matches, 2, '')
   let l:normal_command = get(l:matches, 3, '')
 
+  echom 'DDD: 2 - Parsed header: ft=' . l:filetype . ' buf=' . l:buffername
+
   if empty(l:buffername)
     echom "Warning: No buffer name specified in code block header"
+    echom 'DDD: 3 - Empty buffer name, returning'
     return
   endif
 
   let l:target_bufnr = bufnr(l:buffername)
+  echom 'DDD: 4 - Target buffer number: ' . l:target_bufnr
 
   if l:target_bufnr == -1
     echom "Warning: Buffer not found for " . l:buffername
+    echom 'DDD: 5 - Invalid buffer number, returning'
     return
   endif
 
   if !has_key(a:all_changes, l:target_bufnr)
+    echom 'DDD: 6 - Creating new changes array for buffer'
     let a:all_changes[l:target_bufnr] = []
   endif
 
   if l:filetype ==# 'vimexec'
+    echom 'DDD: 7 - Adding vimexec change'
     call add(a:all_changes[l:target_bufnr], {
           \ 'type': 'vimexec',
           \ 'commands': a:block.code
           \ })
   else
     if empty(l:normal_command)
-      " By default, append to the end of file
+      echom 'DDD: 8 - No normal command, using default'
       let l:normal_command = 'Go<CR>'
     endif
 
+    echom 'DDD: 9 - Adding content change with normal command: ' . l:normal_command
     call add(a:all_changes[l:target_bufnr], {
           \ 'type': 'content',
           \ 'normal_command': l:normal_command,
@@ -1020,17 +1117,25 @@ function! s:ProcessCodeBlock(block, all_changes)
           \ })
   endif
 
-  " Mark the applied code block
   let l:indent = s:GetClaudeIndent()
   call setline(a:block.start_line - 1, l:indent . '```' . a:block.header . ' [APPLIED]')
+  echom 'DDD: 10 - Process complete, marked as APPLIED'
 endfunction
+" At top of file
+let s:debug_counter = 0
 
 function! s:ResponseExtractChanges()
+  let s:debug_counter += 1
+  echom "DDD: ResponseExtractChanges:" . s:debug_counter . ": Starting change extraction"
+  
   let l:all_changes = {}
 
   " Find the start of the last Claude block
   normal! G
   let l:start_line = search('^Claude:', 'b')  " Skip over Claude...:
+  let s:debug_counter += 1
+  echom "DDD: ResponseExtractChanges:" . s:debug_counter . ": Found Claude block at line " . l:start_line
+  
   let l:end_line = line('$')
   let l:markdown_delim = '^' . s:GetClaudeIndent() . '```'
 
@@ -1044,10 +1149,14 @@ function! s:ResponseExtractChanges()
       if ! l:in_code_block
         " Start of code block
         let l:current_block = {'header': substitute(l:line, l:markdown_delim, '', ''), 'code': [], 'start_line': l:line_num + 1}
+        let s:debug_counter += 1
+        echom "DDD: ResponseExtractChanges:" . s:debug_counter . ": Starting code block at line " . l:line_num
         let l:in_code_block = 1
       else
         " End of code block
         let l:current_block.end_line = l:line_num
+        let s:debug_counter += 1
+        echom "DDD: ResponseExtractChanges:" . s:debug_counter . ": Ending code block at line " . l:line_num
         call s:ProcessCodeBlock(l:current_block, l:all_changes)
         let l:in_code_block = 0
       endif
@@ -1059,9 +1168,13 @@ function! s:ResponseExtractChanges()
   " Process any remaining open code block
   if l:in_code_block
     let l:current_block.end_line = l:end_line
+    let s:debug_counter += 1
+    echom "DDD: ResponseExtractChanges:" . s:debug_counter . ": Processing final block ending at " . l:end_line
     call s:ProcessCodeBlock(l:current_block, l:all_changes)
   endif
 
+  let s:debug_counter += 1
+  echom "DDD: ResponseExtractChanges:" . s:debug_counter . ": Completed with " . len(l:all_changes) . " changes"
   return l:all_changes
 endfunction
 
@@ -1069,6 +1182,7 @@ function s:ApplyChangesFromResponse()
   let l:all_changes = s:ResponseExtractChanges()
   if !empty(l:all_changes)
     for [l:target_bufnr, l:changes] in items(l:all_changes)
+      echom "DDD: Applying changes to buffer " . l:target_bufnr . " (" . bufname(l:target_bufnr) . "); shortened_changes=" . string(l:changes)[0:100]." …"
       call s:ApplyCodeChangesDiff(str2nr(l:target_bufnr), l:changes)
     endfor
   endif
@@ -1120,6 +1234,7 @@ endfunction
 
 function! s:StreamingChatResponse(delta)
   let [l:chat_bufnr, l:chat_winid, l:current_winid] = s:GetOrCreateChatWindow()
+  echom "DDD(StreamingChatResponse): chat_bufnr=" . l:chat_bufnr . "; chat_winid=" . l:chat_winid . "; current_winid=" . l:current_winid
   call win_gotoid(l:chat_winid)
 
   let l:indent = s:GetClaudeIndent()
@@ -1139,6 +1254,9 @@ endfunction
 
 function! s:FinalChatResponse()
   let [l:chat_bufnr, l:chat_winid, l:current_winid] = s:GetOrCreateChatWindow()
+  echom "DDD(FinalChatResponse): chat_bufnr=" . l:chat_bufnr . "; chat_winid=" . l:chat_winid . "; current_winid=" . l:current_winid
+
+  call win_gotoid(l:chat_winid)
   let [l:messages, l:system_prompt] = s:ParseChatBuffer()
   let l:tool_uses = s:ResponseExtractToolUses(l:messages)
 
@@ -1149,6 +1267,7 @@ function! s:FinalChatResponse()
   else
     call s:ClosePreviousFold()
     call s:CloseCurrentInteractionCodeBlocks()
+    echom "DDD: calling PrepareNextInput in window id: " . l:current_winid
     call s:PrepareNextInput()
     call win_gotoid(l:current_winid)
     unlet! s:current_chat_job

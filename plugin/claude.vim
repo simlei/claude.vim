@@ -1,13 +1,13 @@
 " File: plugin/claude.vim
 " vim: sw=2 ts=2 et
 
-command! SilentEchoMessage -nargs=1 call s:SilentEchoMessage(<q-args>)
+command! -nargs=1 SilentEchoMessage call s:SilentEchoMessage(eval(<q-args>))
 function! s:SilentEchoMessage(message)
   echomsg a:message
   redraw
 endfunction
 
-command! SilentEchoDebug -nargs=1 call s:SilentEchoDebug(<q-args>)
+command! -nargs=1 SilentEchoDebug call s:SilentEchoDebug(eval(<q-args>))
 function! s:SilentEchoDebug(message)
   if g:claude_debug_enabled
     echomsg "DBG: " . a:message
@@ -307,23 +307,26 @@ function! s:ApplyChange(normal_command, content)
 endfunction
 
 function! s:CleanUpHiddenCodeChangeBuffers(target_bufnr) abort
-
   " Get target buffer's file path
   let l:target_path = expand('#' . a:target_bufnr . ':p')
 
-  " Get list of all buffers
-  let l:buffer_list = getbufinfo()
-
-  " Iterate through all buffers
+  " Get only hidden buffers
+  let l:buffer_list = filter(getbufinfo(), 'v:val.hidden')
+  
+  " Iterate through hidden buffers only
   for buf in l:buffer_list
-    " Check if buffer is hidden, not a real file, is our diff buffer, and matches target path
-    if buf.hidden 
-          \ && empty(buf.name)
+    " Check if buffer is not a real file, is our diff buffer, and matches target path
+    if empty(buf.name) 
           \ && getbufvar(buf.bufnr, 'code_change_diff', 0)
           \ && getbufvar(buf.bufnr, 'code_change_orig_path', '') ==# l:target_path
-      " Delete the buffer
-      SilentEchoDebug "CleanUpHiddenCodeChangeBuffers:1: deleting hidden buffer bufnr=" . buf.bufnr
-      execute 'bwipeout! ' . buf.bufnr
+
+      " Check if buffer can be safely deleted
+      if !getbufvar(buf.bufnr, '&modified')
+        SilentEchoDebug "CleanUpHiddenCodeChangeBuffers: deleting hidden buffer bufnr=" . buf.bufnr
+        execute 'bdelete ' . buf.bufnr
+      else
+        SilentEchoDebug "CleanUpHiddenCodeChangeBuffers: skipping modified buffer bufnr=" . buf.bufnr
+      endif
     endif
   endfor
 endfunction
@@ -1252,21 +1255,23 @@ endfunction
 
 function! s:StreamingChatResponse(delta)
   let [l:chat_bufnr, l:chat_winid, l:current_winid] = s:GetOrCreateChatWindow()
-  call win_gotoid(l:chat_winid)
 
+  " Update chat buffer from current window
+  call setbufvar(l:chat_bufnr, '&modifiable', 1)
+  
   let l:indent = s:GetClaudeIndent()
   let l:new_lines = split(a:delta, "\n", 1)
 
   if len(l:new_lines) > 0
     " Update the last line with the first segment of the delta
-    let l:last_line = getline('$')
-    call setline('$', l:last_line . l:new_lines[0])
+    let l:last_line = getbufline(l:chat_bufnr, '$')[0]
+    call setbufline(l:chat_bufnr, '$', l:last_line . l:new_lines[0])
 
-    call append('$', map(l:new_lines[1:], {_, v -> l:indent . v}))
+    if len(l:new_lines) > 1
+      call appendbufline(l:chat_bufnr, '$', map(l:new_lines[1:], {_, v -> l:indent . v}))
+    endif
   endif
 
-  normal! G
-  call win_gotoid(l:current_winid)
 endfunction
 
 function! s:FinalChatResponse()

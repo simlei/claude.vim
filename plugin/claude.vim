@@ -1,4 +1,34 @@
 " File: plugin/claude.vim
+
+" ============================================================================
+" Changes history
+" ============================================================================
+
+" Change History functionality
+if !exists('g:claude_change_history')
+  let g:claude_change_history = []
+endif
+
+function! s:RecordChanges(changes)
+  if empty(a:changes)
+    return
+  endif
+  
+  call add(g:claude_change_history, a:changes)
+endfunction
+
+function! s:ReplayLastChanges()
+  if len(g:claude_change_history) == 0
+    echom "No changes to replay"
+    return
+  endif
+  
+  let l:last_changes = g:claude_change_history[-1]
+  call s:ApplyChanges(l:last_changes)
+endfunction
+
+nnoremap <F10>sR :call <SID>ReplayLastChanges()<CR>
+
 " ============================================================================
 " Message History
 " ============================================================================
@@ -1255,8 +1285,11 @@ function! s:ResponseExtractChanges()
   return l:all_changes
 endfunction
 
-function s:ApplyChangesFromResponse()
-  let l:all_changes = s:ResponseExtractChanges()
+function s:ApplyChanges(changes)
+  let [l:chat_bufnr, l:chat_winid, l:current_winid] = s:GetOrCreateChatWindow()
+  call win_gotoid(l:chat_winid)
+
+  let l:all_changes = a:changes
   if !empty(l:all_changes)
     for [l:target_bufnr, l:changes] in items(l:all_changes)
       SilentEchoDebug "Applying changes to buffer " . l:target_bufnr . " (" . bufname(l:target_bufnr) . "); shortened_changes=" . string(l:changes)[0:100]." …"
@@ -1264,6 +1297,14 @@ function s:ApplyChangesFromResponse()
     endfor
   endif
   normal! G
+
+  call win_gotoid(l:current_winid)
+endfunction
+
+function s:ApplyChangesFromResponse()
+  let l:all_changes = s:ResponseExtractChanges()
+  call s:RecordChanges(l:all_changes)
+  call s:ApplyChanges(l:all_changes)
 endfunction
 
 

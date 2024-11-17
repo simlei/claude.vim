@@ -7,6 +7,7 @@
 " Change History functionality
 if !exists('g:claude_change_history')
   let g:claude_change_history = []
+  let g:claude_change_history_pos = -1
 endif
 
 function! s:RecordChanges(changes)
@@ -81,7 +82,6 @@ nnoremap <F9><Up> :call <SID>RecallMessage(-1)<CR>
 inoremap <F9><Up> <C-o>:call <SID>RecallMessage(-1)<CR>
 nnoremap <F9><Down> :call <SID>RecallMessage(1)<CR>
 inoremap <F9><Down> <C-o>:call <SID>RecallMessage(1)<CR>
-" vim: sw=2 ts=2 et
 
 command! -nargs=1 SilentEchoMessage call s:SilentEchoMessage(eval(<q-args>))
 function! s:SilentEchoMessage(message)
@@ -394,6 +394,31 @@ function! s:ApplyChange(normal_command, content)
   call winrestview(l:view)
 endfunction
 
+function! s:ApplyVimexec(commands)
+  SilentEchoDebug "ApplyVimexec:0: winid = " . win_getid()
+  " let l:view = winsaveview()
+
+  let l:paste_option = &paste
+  set paste
+
+  for cmd in a:commands
+    SilentEchoDebug "ApplyVimexec:1: executing command=" . cmd . "  | win_getid=" . win_getid()
+	silent! :w
+	let l:bufnr=bufnr('%')
+    " SilentEchoDebug "ApplyVimexec:1.1: executing command=" . cmd . "  | win_getid=" . win_getid() . " | bufnr=" . l:bufnr
+    " call feedkeys(cmd . ':e')
+    " SilentEchoDebug "ApplyVimexec:1.2: executing command=" . cmd . "  | win_getid=" . win_getid() . " | bufnr=" . l:bufnr
+    " call feedkeys(cmd . '', 't')
+	exec "normal! " . cmd . ''
+	" execute printf('normal %s', cmd)
+  endfor
+
+	
+  let &paste = l:paste_option
+
+  " call winrestview(l:view)
+endfunction
+
 function! s:CleanUpHiddenCodeChangeBuffers(target_bufnr) abort
   " Get target buffer's file path
   let l:target_path = expand('#' . a:target_bufnr . ':p')
@@ -419,31 +444,43 @@ function! s:CleanUpHiddenCodeChangeBuffers(target_bufnr) abort
   endfor
 endfunction
 
+function! s:EnsureBufferFocus(bufnr) abort
+  let l:bufwinid = bufwinid(a:bufnr)
+  if l:bufwinid == -1
+    rightbelow vnew
+    exec printf('buffer%d', a:bufnr)
+    let l:bufwinid = bufwinid(a:bufnr)
+  endif
+  call win_gotoid(l:bufwinid)
+  return l:bufwinid
+endfunction
+
+
+function! s:EnsureWindowFocus(winid) abort
+  if win_id2win(a:winid) == 0
+    throw "window to be focused not in the current tabpage"
+  endif
+  call win_gotoid(a:winid)
+  return a:winid
+endfunction
+
 function! s:ApplyCodeChangesDiff(bufnr, changes) abort
   let l:original_winid = win_getid()
   let l:target_winid = -1
+  let l:diff_winid = -1
   let l:failed_edits = []
   let l:error_msg = ''
   let l:success = 0
 
   try
     SilentEchoDebug "ApplyCodeChangesDiff:1: start with bufnr=" . a:bufnr . " changes=" . len(a:changes) . " orig_win=" . l:original_winid
-    
     call s:CleanUpHiddenCodeChangeBuffers(a:bufnr)
-    
-    let l:target_winid = bufwinid(a:bufnr)
-    if l:target_winid == -1
-      SilentEchoDebug "ApplyCodeChangesDiff:2: creating new split, no window found for bufnr=" . a:bufnr
-      execute 'split'
-      execute 'buffer ' . a:bufnr
-      let l:target_winid = win_getid()
-    else
-      SilentEchoDebug "ApplyCodeChangesDiff:3: found existing window target_winid=" . l:target_winid
-      call win_gotoid(l:target_winid)
-    endif
+
+    let l:target_winid = s:EnsureBufferFocus(a:bufnr)
 
     rightbelow vnew
     setlocal buftype=nofile
+    let l:diff_winid = win_getid()
     
     let b:code_change_diff = 1
     let b:code_change_orig_path = expand('#' . a:bufnr . ':p')
@@ -457,15 +494,16 @@ function! s:ApplyCodeChangesDiff(bufnr, changes) abort
     for change in a:changes
       try
         SilentEchoDebug "ApplyCodeChangesDiff:6: processing change type=" . change.type . " target_winid=" . l:target_winid . " failed_count=" . len(l:failed_edits)
+        " Ensure we're in the diff window before applying changes
+        call s:EnsureWindowFocus(l:diff_winid)
+        
+        SilentEchoDebug printf('ApplyCodeChangesDiff:5:0: cur=%d,diff=%d', win_getid(), l:diff_winid)
         if change.type == 'content'
           SilentEchoDebug "ApplyCodeChangesDiff:6-content: applying content change normal_command=" . (change.normal_command)
           call s:ApplyChange(change.normal_command, change.content)
           SilentEchoDebug "ApplyCodeChangesDiff:6-content: applied content change"
         elseif change.type == 'vimexec'
-          for cmd in change.commands
-            SilentEchoDebug "ApplyCodeChangesDiff:6-vimexec: executing command=" . cmd
-            execute 'normal ' . cmd
-          endfor
+          call s:ApplyVimexec(change.commands)
         endif
         SilentEchoDebug "ApplyCodeChangesDiff:8: change applied successfully type=" . change.type
       catch
@@ -480,7 +518,7 @@ function! s:ApplyCodeChangesDiff(bufnr, changes) abort
 
     SilentEchoDebug "ApplyCodeChangesDiff:10: applying diff mode target_winid=" . l:target_winid . " failed_total=" . len(l:failed_edits)
     diffthis
-    call win_gotoid(l:target_winid)
+    call s:EnsureWindowFocus(l:target_winid)
     diffthis
 
     if !empty(l:failed_edits)
@@ -496,7 +534,7 @@ function! s:ApplyCodeChangesDiff(bufnr, changes) abort
 
   finally
     SilentEchoDebug "ApplyCodeChangesDiff:13: cleanup orig_win=" . l:original_winid . " success=" . l:success . " error=" . l:error_msg
-    call win_gotoid(l:original_winid)
+    call s:EnsureWindowFocus(l:original_winid)
     
     if !l:success
       throw !empty(l:error_msg) ? l:error_msg : "Failed to apply code changes diff"

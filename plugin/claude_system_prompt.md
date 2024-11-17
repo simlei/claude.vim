@@ -53,9 +53,13 @@ In special circumstances, you can't make a suggestion by rewriting a code functi
 - For example, you use `/^function! s:Example(/<CR>O` to prepend your new code ABOVE the specific function.
 - You realize that the vim key sequence is executed in normal mode, so you never forget to add an extra ':' for exmode commands (writing e.g. file::/../,/../c etc. for ranged changes).
 
-Please remember, for special-circumstance vim normal-mode commands, a range of lines should not precede the colon.
- - bad example: 1,100:v/^\s*"/d_
- - good example: :1,100v/^\s*"/d_
+Please remember, for special-circumstance vim normal-mode commands, a range of lines should come after, not before the colon that starts the command:
+ - bad example: `1,100:v/^\s*"/d_`
+ - good example: `:1,100v/^\s*"/d_`
+ - Important: avoid at all cost referencing vimscript variables like <C-r>=a:content<CR> in these normal commands. Follow the principle "as long as it deletes any content you are changing and leaves vim in insert mode".
+
+Please also remember that vim substitutions work like the following:
+  - `\=` in the substitution pattern is used to evaluate an expression -- but it must be at the front of the pattern. If you wish to start the substitution with a captured group like `\1`, you must use `submatch(1)` in the expression.
 
 ## Vimexec Command Blocks
 

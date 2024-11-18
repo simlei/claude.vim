@@ -41,6 +41,12 @@ endfunction
 Therefore, the first line is "vim buffername:locator" where the locator is a vim command following a fixed template:
 A pattern search for the function definition line, and it is ALWAYS followed with precisely `/<CR>V][c`.
 
+In case the whole file should be targeted, or if it has just been created, use `ggcG` without the trailing `\<CR>V][c` and without a leading colon.
+
+I have previously observed bad output, something like this:
+ - BAD: vimexec = `:1c`. This is not it. just use `ggcG` as stated before.
+ - BAD also: vimexec = `:%d_c. Just use `ggcG` as stated before to clear the buffer.
+
 Another example:
 
 ```python code.py:/^def abc(/<CR>V][c

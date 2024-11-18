@@ -74,7 +74,11 @@ function! s:RecallMessage(direction)
   let g:claude_message_history_pos = l:new_pos
   let l:message = g:claude_message_history[g:claude_message_history_pos]
   
-  call append('.', 'You: ' . l:message)
+  " use V selection
+  call setreg("z", l:message, "V")
+  normal! G
+  normal! "zp
+  " call append('.', 'You: ' . l:message)
   normal! j$
 endfunction
 
@@ -176,9 +180,12 @@ function! s:ClaudeLoadPrompt(prompt_type)
   return readfile(l:prompts_file)
 endfunction
 
-if !exists('g:claude_default_system_prompt')
-  let g:claude_default_system_prompt = s:ClaudeLoadPrompt('system')
-endif
+
+function! s:ClaudeGetSystemPrompt() abort
+  " I want it loaded everytime fresh
+  let l:content = s:ClaudeLoadPrompt('system')
+  return l:content
+endf
 
 " Add this near the top of the file, after other configuration variables
 if !exists('g:claude_implement_prompt')
@@ -385,10 +392,12 @@ function! s:ApplyChange(normal_command, content)
   set paste
 
   SilentEchoDebug "ApplyChange:1:"
-  let l:normal_command = substitute(a:normal_command, '<CR>', "\<CR>", 'g')
-  let l:execute_payload = 'normal ' . l:normal_command . "\<C-r>=a:content\<CR>"
+  let l:execute_payload = a:normal_command . '=a:content'
+  let l:execute_payload = substitute(l:execute_payload, '<CR>', '', 'g')
+
   SilentEchoDebug "ApplyChange:2: executing; execute_payload=" . l:execute_payload
-  execute l:execute_payload
+  SilentEchoDebug "ApplyChange:3: a:content=" . a:content[0:100]
+  execute printf('normal %s', l:execute_payload)
 
   let &paste = l:paste_option
   call winrestview(l:view)
@@ -983,8 +992,8 @@ function! s:OpenClaudeChat()
 
     call s:SetupClaudeChatSyntax()
 
-    call setline(1, ['System prompt: ' . g:claude_default_system_prompt[0]])
-    call append('$', map(g:claude_default_system_prompt[1:], {_, v -> "\t" . v}))
+    call setline(1, ['System prompt: ' . s:ClaudeGetSystemPrompt()[0]])
+    call append('$', map(s:ClaudeGetSystemPrompt()[1:], {_, v -> "\t" . v}))
     call append('$', ['Type your messages below, press C-] to send.  (Content of all buffers is shared alongside!)', '', 'You: '])
 
     " Fold the system prompt

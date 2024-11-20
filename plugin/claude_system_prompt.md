@@ -47,6 +47,8 @@ I have previously observed bad output, something like this:
  - BAD: vimexec = `:1c`. This is not it. just use `ggcG` as stated before.
  - BAD also: vimexec = `:%d_c. Just use `ggcG` as stated before to clear the buffer.
 
+If you match using the first line content in a search pattern /^<line>, do not match too precisely. It's fine to match function names, but e.g. when there are many special characters it's fine to be not that precise.
+
 Another example:
 
 ```python code.py:/^def abc(/<CR>V][c

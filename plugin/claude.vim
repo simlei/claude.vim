@@ -29,6 +29,36 @@ function! s:ReplayLastChanges()
 endfunction
 
 nnoremap <F10>sR :call <SID>ReplayLastChanges()<CR>
+nnoremap <F10>sP :call g:Claude__ApplyChangesFromResponse()<CR>
+
+
+function! g:Claude__ApplyChangesFromResponse() abort
+  APIClaudeWithChatWindowActive call s:ApplyChangesFromResponse()
+endfun
+
+" ============================================================================
+
+command! -nargs=1 APIClaudeWithChatWindowActive call <SID>WithChatWindowActive(<f-args>)
+
+" Winfocus-preserving go-to-claude function
+function! s:WithChatWindowActive(expression) abort
+  let l:result = "EMPTY"
+  let [l:chat_bufnr, l:chat_winid, l:current_winid] = s:GetOrCreateChatWindow()
+  try
+    if win_gotoid(l:chat_winid) != 1
+      throw "Failed to switch to chat window"
+    endif
+    let l:result = eval(a:expression)
+  finally
+    if win_gotoid(l:current_winid) != 1
+      throw "Failed to restore original window focus"
+    endif
+  endtry
+
+  return l:result
+endfun
+
+
 
 " ============================================================================
 " Message History
@@ -1296,11 +1326,12 @@ function! s:ResponseExtractChanges()
   SilentEchoDebug "ResponseExtractChanges:" . "2" . ": Found Claude block at line " . l:start_line
   
   let l:end_line = line('$')
-  let l:markdown_delim = '^' . s:GetClaudeIndent() . '```'
+  let l:markdown_delim = '^\s*```'
 
   let l:in_code_block = 0
   let l:current_block = {'header': '', 'code': [], 'start_line': 0}
 
+  SilentEchoDebug "DDD: checking lines against " . l:markdown_delim
   for l:line_num in range(l:start_line, l:end_line)
     let l:line = getline(l:line_num)
 
